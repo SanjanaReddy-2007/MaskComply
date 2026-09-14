@@ -20,18 +20,28 @@ consumes the same (box, class, confidence) triples either way.
 """
 
 import argparse
+import json
 import cv2
 import torch
 import torch.nn as nn
 from torchvision import transforms
 from pathlib import Path
 
-CLASS_NAMES = ["mask", "no_mask"]  # alphabetical: ImageFolder loads with_mask=0, without_mask=1
 CLASS_COLORS = {
     "mask": (0, 200, 0),        # green (BGR)
     "no_mask": (0, 0, 220),     # red
-    "incorrect": (0, 200, 220), # yellow (reserved for future 3-class model)
+    "incorrect": (0, 200, 220), # yellow
 }
+
+
+def load_class_names(weights_path):
+    """Reads classes.json saved alongside the weights by train_classifier.py.
+    Falls back to the old 2-class default only if it's genuinely missing,
+    so older weight files from Day 1 still work."""
+    classes_path = Path(weights_path).with_name("classes.json")
+    if classes_path.exists():
+        return json.loads(classes_path.read_text())
+    return ["mask", "no_mask"]  # legacy fallback (Day 1 2-class model)
 
 
 class MaskClassifier(nn.Module):
@@ -63,11 +73,12 @@ def load_face_detector():
 
 
 def load_classifier(weights_path):
-    model = MaskClassifier(num_classes=len(CLASS_NAMES))
+    class_names = load_class_names(weights_path)
+    model = MaskClassifier(num_classes=len(class_names))
     state = torch.load(weights_path, map_location="cpu")
     model.load_state_dict(state)
     model.eval()
-    return model
+    return model, class_names
 
 
 PREPROCESS = transforms.Compose([
@@ -78,19 +89,19 @@ PREPROCESS = transforms.Compose([
 ])
 
 
-def classify_face(model, face_bgr):
+def classify_face(model, class_names, face_bgr):
     face_rgb = cv2.cvtColor(face_bgr, cv2.COLOR_BGR2RGB)
     tensor = PREPROCESS(face_rgb).unsqueeze(0)
     with torch.no_grad():
         logits = model(tensor)
         probs = torch.softmax(logits, dim=1)[0]
         conf, pred_idx = torch.max(probs, dim=0)
-    return CLASS_NAMES[pred_idx.item()], float(conf.item())
+    return class_names[pred_idx.item()], float(conf.item())
 
 
 def run_on_image(image_path, weights_path, output_path):
     detector = load_face_detector()
-    classifier = load_classifier(weights_path)
+    classifier, class_names = load_classifier(weights_path)
 
     img = cv2.imread(str(image_path))
     if img is None:
@@ -102,7 +113,7 @@ def run_on_image(image_path, weights_path, output_path):
     results = []
     for (x, y, w, h) in faces:
         face_crop = img[y:y + h, x:x + w]
-        label, confidence = classify_face(classifier, face_crop)
+        label, confidence = classify_face(classifier, class_names, face_crop)
         results.append({"box": (x, y, w, h), "class": label, "confidence": confidence})
 
         color = CLASS_COLORS.get(label, (255, 255, 255))

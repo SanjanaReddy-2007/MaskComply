@@ -1,0 +1,34 @@
+# Datasets -- too large for git, download instructions are in docs/
+data/raw/
+data/shiekhburhan_raw/
+data/yolo_dataset/
+*.zip
+
+# Model weights -- exclude pretrained base weights (auto-downloaded by
+# ultralytics, no need to commit) but KEEP your own fine-tuned classifier
+# and classes.json -- small enough (~400KB) to commit for reproducibility
+models/yolov8n.pt
+models/mask_yolov8n/
+runs/
+
+# Kaggle credentials -- NEVER commit your API token
+kaggle.json
+.kaggle/
+
+# Generated outputs -- regenerate via the pipeline scripts, don't need to be in git
+outputs/*.mp4
+outputs/*.jpg
+outputs/*.csv
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.log
+
+# Editor/OS cruft
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
