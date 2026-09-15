@@ -12,10 +12,10 @@ from pathlib import Path
 
 import cv2
 
-from src.detect import load_face_detector, load_classifier, classify_face, CLASS_COLORS
-from src.tracker import CentroidTracker
-from src.scorer import ComplianceAggregator, threshold_band
-from src.nms import deduplicate_boxes
+from detect import load_face_detector, load_classifier, classify_face, CLASS_COLORS
+from tracker import CentroidTracker
+from scorer import ComplianceAggregator, threshold_band
+from nms import deduplicate_boxes
 
 BAND_COLOR = {"GREEN": (0, 200, 0), "YELLOW": (0, 200, 220), "RED": (0, 0, 220)}
 
@@ -23,7 +23,7 @@ BAND_COLOR = {"GREEN": (0, 200, 0), "YELLOW": (0, 200, 220), "RED": (0, 0, 220)}
 def process_video(video_path, weights_path, output_path, csv_path,
                    alpha=0.25, max_missed=10):
     face_detector = load_face_detector()
-    classifier = load_classifier(weights_path)
+    classifier, class_names = load_classifier(weights_path)
     tracker = CentroidTracker(max_missed=max_missed, max_distance=100)
     aggregator = ComplianceAggregator(alpha=alpha, session_window=90)
 
@@ -34,7 +34,7 @@ def process_video(video_path, weights_path, output_path, csv_path,
     fps = cap.get(cv2.CAP_PROP_FPS) or 25
     w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    writer = cv2.VideoWriter(str(output_path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
+    writer = cv2.VideoWriter(str(output_path), cv2.VideoWriter_fourcc(*"XVID"), fps, (w, h))
 
     Path(csv_path).parent.mkdir(parents=True, exist_ok=True)
     csv_file = open(csv_path, "w", newline="")
@@ -69,7 +69,7 @@ def process_video(video_path, weights_path, output_path, csv_path,
             if face_crop.size == 0:
                 missed_ids.add(track_id)
                 continue
-            label, confidence = classify_face(classifier, face_crop)
+            label, confidence = classify_face(classifier, class_names, face_crop)
             per_person_results[track_id] = (label, confidence)
 
         frame_result = aggregator.update_frame(per_person_results, missed_ids)
@@ -116,7 +116,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--video", required=True)
     parser.add_argument("--weights", default="models/mask_classifier.pt")
-    parser.add_argument("--output", default="outputs/scored_video.mp4")
+    parser.add_argument("--output", default="outputs/scored_video.avi")
     parser.add_argument("--csv", default="outputs/compliance_log.csv")
     parser.add_argument("--alpha", type=float, default=0.25)
     args = parser.parse_args()

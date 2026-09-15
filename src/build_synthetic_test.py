@@ -21,8 +21,8 @@ real video test. It:
 import cv2
 import numpy as np
 
-SRC_IMAGE = "data/cdeb7/images/pic2.jpg"
-OUT_VIDEO = "outputs/synthetic_test.mp4"
+SRC_IMAGE = "data/raw/day1_substitute_cdeb7/images/pic2.jpg"
+OUT_VIDEO = "outputs/synthetic_test.avi"
 N_FRAMES = 60
 DROPOUT_START = 25
 DROPOUT_LEN = 4
@@ -33,7 +33,7 @@ MASK_FACE_BOX = (343, 58, 212, 212)  # x, y, w, h
 def build_video():
     img = cv2.imread(SRC_IMAGE)
     h, w = img.shape[:2]
-    writer = cv2.VideoWriter(OUT_VIDEO, cv2.VideoWriter_fourcc(*"mp4v"), 10, (w, h))
+    writer = cv2.VideoWriter(OUT_VIDEO, cv2.VideoWriter_fourcc(*"XVID"), 10, (w, h))
 
     rng = np.random.default_rng(42)
     for i in range(N_FRAMES):

@@ -1,214 +1,202 @@
 # MaskComply
 
-**MaskComply** is a computer-vision-based safety compliance system that detects whether people are wearing masks correctly and converts detection results into a **compliance/risk score**.
+**Temporal Face Mask Compliance Scoring Using Lightweight Detection and Tracking**
 
-The project combines **YOLO-based person detection, mask classification, video processing, and compliance scoring** to identify unsafe mask-wearing behavior and generate compliance information.
-
----
-
-## Features
-
-- Detects people in video frames.
-- Classifies mask usage into:
-  - `with_mask`
-  - `without_mask`
-  - `incorrect_mask`
-- Uses a fine-tuned image classification model for mask classification.
-- Processes videos frame-by-frame.
-- Calculates compliance scores based on observed mask behavior.
-- Generates compliance logs for analysis.
-- Provides a Streamlit-based dashboard for visualization.
-- Supports synthetic video testing for validating the compliance-scoring layer.
+A rule-based scoring layer on top of a face detector that turns per-face
+mask classifications into a continuous, temporally-smoothed compliance
+score (0.0–1.0) per frame/session — for facility monitoring dashboards,
+not just per-face labels.
 
 ---
 
-## Project Structure
+## Project structure
 
-```text
+```
 MaskComply/
+├── README.md
+├── requirements.txt
+├── .gitignore
+├── validation_config.json      ← you create this (see Day 4 below)
 │
 ├── data/
-│   └── shiekhburhan_raw/
-│       └── FMD_DATASET/
-│           ├── incorrect_mask/
-│           ├── with_mask/
-│           └── without_mask/
-│
-├── docs/
-│   └── DAY2_README.md
+│   ├── shiekhburhan_raw/
+│   │   └── FMD_DATASET/
+│   │       ├── incorrect_mask/
+│   │       ├── with_mask/
+│   │       └── without_mask/
+│   └── test_clips/              ← your real Day 4 test footage goes here
 │
 ├── models/
-│   ├── classes.json
-│   └── mask_classifier.pt
-│
-├── outputs/
-│   ├── pic1_annotated.jpg
-│   ├── pic2_annotated.jpg
-│   ├── synthetic_compliance_log.csv
-│   └── synthetic_scored.mp4
+│   ├── mask_classifier.pt       ← trained weights
+│   ├── classes.json             ← auto-generated class-name mapping
+│   └── yolov8n.pt                ← pretrained base (not fine-tuned, see limitations)
 │
 ├── src/
-│   ├── dashboard.py
-│   ├── detect.py
-│   ├── nms.py
-│   ├── pipeline_video.py
-│   ├── scorer.py
-│   ├── tracker.py
-│   ├── train_classifier.py
-│   └── ...
+│   ├── detect.py                 ← face detect + classify, draws box/label/confidence
+│   ├── train_classifier.py       ← fine-tunes classifier on real labeled data
+│   ├── verify_classifier.py      ← per-class accuracy + spot-check tool
+│   ├── tracker.py                ← centroid tracker with track confirmation
+│   ├── scorer.py                 ← EMA scoring formula + threshold bands
+│   ├── nms.py                    ← duplicate-detection fix (see Day 2 bug below)
+│   ├── pipeline_video.py         ← full detect→track→score pipeline for video
+│   ├── dashboard.py               ← Streamlit live dashboard + alert logging
+│   ├── validate.py                ← Day 4: correlate automated vs human ratings
+│   ├── build_validation_config.py ← scaffolds validation_config.json
+│   ├── build_synthetic_test.py    ← synthetic dropout stress-test generator
+│   ├── train_yolo.py              ← YOLOv8n 3-class fine-tuning (needs bbox data — not yet run)
+│   └── convert_voc_to_yolo.py     ← VOC XML → YOLO format converter (for train_yolo.py)
 │
-├── .gitignore
-├── requirements.txt
-└── README.md
+├── outputs/                      ← generated results (annotated media, CSV logs)
+└── docs/
+    ├── DAY1_README.md
+    └── DAY2_README.md
+```
 
-Dataset
+---
 
-The project uses the Face Mask Dataset by shiekhburhan from Kaggle.
+## Pipeline
 
-The dataset contains three categories:
+```
+video/image → face detector (Haar cascade) → classifier (CNN)
+    → tracker (persistent IDs, filters phantom detections)
+    → per-person EMA scorer → frame/session compliance score
+    → dashboard + alert log
+```
 
-incorrect_mask
-with_mask
-without_mask
+**Scoring formula** (exact, from the original blueprint):
 
-The dataset is not included in this repository because of its large size.
+```
+class_weight = 1.0 (mask) / 0.5 (incorrect) / 0.0 (no_mask)
+raw_score(i) = class_weight(i) × confidence(i)
+EMA_score(p, t) = α·raw_score(p, t) + (1-α)·EMA_score(p, t-1)
+Frame_Compliance_Score = mean(EMA_score(p, t) for all tracked p in frame)
 
-Download Dataset
+Bands:  Green ≥ 0.8   |   Yellow 0.5–0.8   |   Red < 0.5
+```
 
-Install the Kaggle CLI if required and authenticate using your Kaggle API token.
+---
 
-Then run:
+## Setup
 
-kaggle datasets download shiekhburhan/face-mask-dataset
-
-Create the dataset directory:
-
-New-Item -ItemType Directory -Force data\shiekhburhan_raw
-
-Extract the downloaded ZIP:
-
-Expand-Archive -Path .\face-mask-dataset.zip -DestinationPath .\data\shiekhburhan_raw -Force
-
-The expected structure is:
-
-data/
-└── shiekhburhan_raw/
-    └── FMD_DATASET/
-        ├── incorrect_mask/
-        ├── with_mask/
-        └── without_mask/
-Installation
-
-Clone the repository:
-
-git clone https://github.com/SanjanaReddy-2007/MaskComply.git
-cd MaskComply
-
-Create and activate a virtual environment:
-
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-
-Install dependencies:
-
+```bash
 pip install -r requirements.txt
-Train the Mask Classifier
+```
 
-The classifier can be trained using the prepared dataset:
+Get a Kaggle API key (kaggle.com → Settings → Create New Token → save as
+`~/.kaggle/kaggle.json`), then:
 
-python -m src.train_classifier --data_dir .\data\shiekhburhan_raw\FMD_DATASET
+```bash
+kaggle datasets download shiekhburhan/face-mask-dataset
+unzip face-mask-dataset.zip -d data/shiekhburhan_raw
+```
 
-The trained model is saved as:
+---
 
-models/mask_classifier.pt
+## Quick start
 
-Class information is stored in:
+```bash
+# Train the classifier (real 3-class data, ~93% validation accuracy achieved)
+python src/train_classifier.py --data_dir data/shiekhburhan_raw/FMD_DATASET
 
-models/classes.json
-Run Video Processing
+# Sanity-check it (per-class accuracy + spot-check predictions)
+python src/verify_classifier.py --data_dir data/shiekhburhan_raw/FMD_DATASET
 
-The video pipeline processes an input video and applies detection, tracking, mask classification, and compliance scoring.
+# Run on a single image
+python src/detect.py --image path/to/photo.jpg --weights models/mask_classifier.pt
 
-Example:
+# Run the full detect+track+score pipeline on a video
+python src/pipeline_video.py --video path/to/video.mp4 --weights models/mask_classifier.pt
 
-python src/pipeline_video.py
+# Live dashboard (note the -- before your own args)
+streamlit run src/dashboard.py -- --video path/to/video.mp4 --weights models/mask_classifier.pt
+```
 
-Refer to the source script for the available configuration options.
+---
 
-Compliance Scoring
+## Day 4 — Validation
 
-Mask classification alone does not represent overall compliance.
+This is how you turn "a working pipeline" into a validated result for the
+paper.
 
-The scoring layer considers observed behavior over time and converts detections into a compliance/risk measure.
+1. **Get 3–5 real, independent short video clips.** Not the training
+   data, not synthetic — genuine footage. Recording your own short
+   phone/webcam clips is the recommended approach (see rationale in the
+   project chat log) — cheap, no licensing issues, and matches the
+   deployment scenario directly. Put them in `data/test_clips/`.
 
-For example:
+2. **Scaffold the config:**
+   ```bash
+   python src/build_validation_config.py --clips_dir data/test_clips
+   ```
+   This writes `validation_config.json` with a `null` placeholder for
+   each clip's human rating.
 
-With Mask          → Compliant
-Incorrect Mask     → Partial / Reduced Compliance
-Without Mask       → Non-Compliant
+3. **Watch each clip yourself** (or with 1–2 others) and fill in a real
+   0.0–1.0 compliance rating in place of each `null`.
 
-The scoring layer can aggregate observations across frames or tracked individuals rather than treating every frame independently.
+4. **Run validation:**
+   ```bash
+   python src/validate.py --config validation_config.json --weights models/mask_classifier.pt
+   ```
+   This prints Pearson and Spearman correlation between your automated
+   scores and human ratings, and saves the full result to
+   `outputs/validation_result.json`.
 
-This makes the system more suitable for continuous video monitoring.
+**Important:** a mechanism test was run during development using 3
+deliberately distinct synthetic clips built from training images
+(Pearson r=0.998) — this number is real but scientifically meaningless
+for the report, since it's circular (clips built from training data) and
+the sample is trivially separable. Do not report that number. Run it
+again on your own real, independent clips before writing up results.
 
-Streamlit Dashboard
+---
 
-The project includes a Streamlit dashboard:
+## Known limitations — read before writing the report
 
-streamlit run src\dashboard.py
+**1. Detector is not fine-tuned.** The blueprint specifies a single-stage
+YOLOv8n detector fine-tuned on 3 classes. What's actually running is
+OpenCV's off-the-shelf Haar cascade (face location, not fine-tuned) +
+a separately fine-tuned CNN classifier (mask/no_mask/incorrect). This
+happened because every dataset actually reachable during development
+(Kaggle's `andrewmvd/face-mask-detection` was inaccessible; the GitHub
+substitute and `shiekhburhan/face-mask-dataset` used instead) is
+classification-only — folders of cropped face images, no bounding-box
+annotations. `train_yolo.py` and `convert_voc_to_yolo.py` are written
+and ready; they just need a bbox-annotated dataset to actually run.
 
-The dashboard is intended to provide an interface for viewing video-processing and compliance results.
+**2. Haar cascade misses faces sometimes.** It's not trained for masked
+faces specifically and can miss detections at odd angles or when a mask
+obscures the geometry it looks for. This is the real motivation for
+item 1 above — a fine-tuned YOLOv8n would be materially more robust.
 
-Outputs
+**3. `mask` vs `incorrect` confusion.** The trained classifier's
+per-class accuracy is mask=89.7%, no_mask=98.9%, incorrect=92.2%. The
+errors that do occur are concentrated between `mask` and `incorrect`
+specifically (confirmed via spot-check), which makes sense — a mask worn
+slightly wrong looks visually similar to one worn correctly, while a bare
+face looks nothing like either. Worth stating directly in the report's
+limitations section as an expected, explainable failure mode.
 
-Generated outputs may include:
+**4. A real bug was found and fixed during Day 2 testing**, worth
+mentioning in the report as a legitimate engineering finding: Haar
+cascade emitted duplicate overlapping boxes for the same face on noisy
+frames, causing the tracker to spawn phantom "people" that diluted the
+frame-level compliance average. Fixed via IoU-based deduplication
+(`nms.py`) + track confirmation (a track only counts once matched
+consistently for 3 frames, sticky across brief dropouts). Verified via a
+synthetic stress test: the target person's EMA held rock-steady through
+a simulated 4-frame misdetection after the fix.
 
-Annotated Images
-outputs/pic1_annotated.jpg
-outputs/pic2_annotated.jpg
-Compliance Log
-outputs/synthetic_compliance_log.csv
+**5. OpenCV video codec gotcha.** Videos written by earlier versions of
+these scripts used the `mp4v` fourcc, which produces `.mp4` files that
+often appear blank/unplayable in standard players (a well-known OpenCV
+issue) despite containing valid frame data. Fixed by switching to `XVID`
+fourcc with `.avi` containers throughout.
 
-The log contains compliance-related information generated during processing.
+---
 
-Processed Video
-outputs/synthetic_scored.mp4
+## Day-by-day build log
 
-The processed video contains the scoring/annotation results.
-
-Technologies Used
-Python
-PyTorch
-Torchvision
-OpenCV
-Ultralytics YOLO
-NumPy
-Pandas
-Streamlit
-Kaggle Dataset
-Future Improvements
-Improve mask classification accuracy under difficult lighting and occlusion.
-Improve tracking consistency across frames.
-Add real-time camera support.
-Improve individual-level compliance tracking.
-Add configurable compliance thresholds.
-Extend the scoring system for long-term monitoring and analytics.
-Deploy the dashboard as a web application.
-License
-
-This project is intended for academic and research purposes.
-
-The face-mask dataset used by the project is obtained from Kaggle and follows the license specified by its original dataset provider.
-
-
-### One thing I'd change before pushing
-
-Your repository currently has:
-
-```text
-outputs/
-    synthetic_scored.mp4
-    synthetic_compliance_log.csv
-    ...
-
-but your .gitignore is configured to ignore generated outputs. That's actually good—you don't need to commit generated videos/CSVs.
+See `docs/DAY1_README.md` and `docs/DAY2_README.md` for the detailed,
+honest account of what was built each day, what didn't work on the first
+try, and how it was fixed.
