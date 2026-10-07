@@ -1,0 +1,28 @@
+{
+  "clips": [
+    {
+      "path": "data\\test_clips\\10828238-hd_1080_1920_30fps.mp4",
+      "human_rating": null
+    },
+    {
+      "path": "data\\test_clips\\4562551-hd_1280_720_30fps.mp4",
+      "human_rating": null
+    },
+    {
+      "path": "data\\test_clips\\6307647-uhd_2160_3840_24fps.mp4",
+      "human_rating": null
+    },
+    {
+      "path": "data\\test_clips\\8469243-hd_1920_1080_25fps.mp4",
+      "human_rating": null
+    },
+    {
+      "path": "data\\test_clips\\istockphoto-1212771708-640_adpp_is.mp4",
+      "human_rating": null
+    },
+    {
+      "path": "data\\test_clips\\istockphoto-1287658775-640_adpp_is.mp4",
+      "human_rating": null
+    }
+  ]
+}
