@@ -27,12 +27,14 @@ MaskComply/
 │   └── test_clips/              ← your real Day 4 test footage goes here
 │
 ├── models/
-│   ├── mask_classifier.pt       ← trained weights
+│   ├── best.pt                  ← fine-tuned YOLOv8 detector (default; train it, see below)
+│   ├── mask_classifier.pt       ← legacy CNN classifier weights (--detector haar only)
 │   ├── classes.json             ← auto-generated class-name mapping
 │   └── yolov8n.pt                ← pretrained base (not fine-tuned, see limitations)
 │
 ├── src/
-│   ├── detect.py                 ← face detect + classify, draws box/label/confidence
+│   ├── detection.py              ← shared detector: YOLOv8 (default) or legacy Haar+CNN
+│   ├── detect.py                 ← single-image detect, draws box/label/confidence
 │   ├── train_classifier.py       ← fine-tunes classifier on real labeled data
 │   ├── verify_classifier.py      ← per-class accuracy + spot-check tool
 │   ├── tracker.py                ← centroid tracker with track confirmation
@@ -43,8 +45,8 @@ MaskComply/
 │   ├── validate.py                ← Day 4: correlate automated vs human ratings
 │   ├── build_validation_config.py ← scaffolds validation_config.json
 │   ├── build_synthetic_test.py    ← synthetic dropout stress-test generator
-│   ├── train_yolo.py              ← YOLOv8n 3-class fine-tuning (needs bbox data — not yet run)
-│   └── convert_voc_to_yolo.py     ← VOC XML → YOLO format converter (for train_yolo.py)
+│   ├── train_yolo.py              ← YOLOv8n 3-class fine-tuning
+│   └── convert_voc_to_yolo.py     ← Kaggle VOC XML → YOLO format + train/val split + data.yaml
 │
 ├── outputs/                      ← generated results (annotated media, CSV logs)
 └── docs/
@@ -57,7 +59,7 @@ MaskComply/
 ## Pipeline
 
 ```
-video/image → face detector (Haar cascade) → classifier (CNN)
+video/image → YOLOv8 detector (finds each face + mask / no_mask / incorrect)
     → tracker (persistent IDs, filters phantom detections)
     → per-person EMA scorer → frame/session compliance score
     → dashboard + alert log
@@ -95,20 +97,34 @@ unzip face-mask-dataset.zip -d data/shiekhburhan_raw
 ## Quick start
 
 ```bash
-# Train the classifier (real 3-class data, ~93% validation accuracy achieved)
+# 1. Get the bounding-box dataset and convert it to YOLO format
+kaggle datasets download andrewmvd/face-mask-detection
+unzip face-mask-detection.zip -d data/kaggle_raw        # Windows: Expand-Archive
+python src/convert_voc_to_yolo.py --raw_dir data/kaggle_raw --out_dir data/yolo_dataset
+#    (optional) --negatives_dir data/negatives   <- frames with no faces: windows, lights, signs
+
+# 2. Train the detector (use a GPU, e.g. Colab), then put the result at models/best.pt
+python src/train_yolo.py --data data/yolo_dataset/data.yaml --epochs 50 --imgsz 960
+
+# 3. Run on a single image
+python src/detect.py --image path/to/photo.jpg --yolo_weights models/best.pt
+
+# 4. Run the full detect+track+score pipeline on a video
+python src/pipeline_video.py --video path/to/video.mp4 --yolo_weights models/best.pt
+
+# 5. Live dashboard (note the -- before your own args)
+streamlit run src/dashboard.py -- --video path/to/video.mp4 --yolo_weights models/best.pt
+
+# Useful options on every script above:
+#   --conf 0.4      minimum detection confidence (raise it to cut false boxes)
+#   --imgsz 960     YOLO inference size
+#   --save_frames 30  (pipeline_video.py) also save every 30th annotated frame as a JPG
+#   --detector haar use the old Haar cascade + CNN classifier instead
+#                   (needs opencv-python<5 and models/mask_classifier.pt)
+
+# Legacy classifier (only needed for --detector haar)
 python src/train_classifier.py --data_dir data/shiekhburhan_raw/FMD_DATASET
-
-# Sanity-check it (per-class accuracy + spot-check predictions)
 python src/verify_classifier.py --data_dir data/shiekhburhan_raw/FMD_DATASET
-
-# Run on a single image
-python src/detect.py --image path/to/photo.jpg --weights models/mask_classifier.pt
-
-# Run the full detect+track+score pipeline on a video
-python src/pipeline_video.py --video path/to/video.mp4 --weights models/mask_classifier.pt
-
-# Live dashboard (note the -- before your own args)
-streamlit run src/dashboard.py -- --video path/to/video.mp4 --weights models/mask_classifier.pt
 ```
 
 ---
@@ -136,7 +152,7 @@ paper.
 
 4. **Run validation:**
    ```bash
-   python src/validate.py --config validation_config.json --weights models/mask_classifier.pt
+   python src/validate.py --config validation_config.json --yolo_weights models/best.pt
    ```
    This prints Pearson and Spearman correlation between your automated
    scores and human ratings, and saves the full result to
@@ -153,21 +169,23 @@ again on your own real, independent clips before writing up results.
 
 ## Known limitations — read before writing the report
 
-**1. Detector is not fine-tuned.** The blueprint specifies a single-stage
-YOLOv8n detector fine-tuned on 3 classes. What's actually running is
-OpenCV's off-the-shelf Haar cascade (face location, not fine-tuned) +
-a separately fine-tuned CNN classifier (mask/no_mask/incorrect). This
-happened because every dataset actually reachable during development
-(Kaggle's `andrewmvd/face-mask-detection` was inaccessible; the GitHub
-substitute and `shiekhburhan/face-mask-dataset` used instead) is
-classification-only — folders of cropped face images, no bounding-box
-annotations. `train_yolo.py` and `convert_voc_to_yolo.py` are written
-and ready; they just need a bbox-annotated dataset to actually run.
+**1. Detector is a first fine-tune on a small dataset.** The default
+detector is YOLOv8n fine-tuned on the Kaggle `andrewmvd/face-mask-detection`
+set (853 images, 3 classes). Held-out validation (171 images, imgsz 960):
+overall mAP50 0.860; mask 0.982, no_mask 0.879, incorrect 0.720. Two caveats
+for the report: (a) `incorrect` was measured on only 19 examples, so that
+figure is rough; (b) these images are mostly clear, close-up faces, so
+accuracy on small, distant, blurry faces in street footage is expected to be
+lower and has not been measured -- that needs labeled frames from your own
+clips. `no_mask` recall is 0.793, so about 1 in 5 bare faces can be missed,
+which makes the compliance score read slightly high.
 
-**2. Haar cascade misses faces sometimes.** It's not trained for masked
-faces specifically and can miss detections at odd angles or when a mask
-obscures the geometry it looks for. This is the real motivation for
-item 1 above — a fine-tuned YOLOv8n would be materially more robust.
+**2. The earlier Haar + CNN path had real false-positive problems** (boxes on
+windows, lights and clothing, each scored as `no_mask`) and misses masked,
+turned or small faces. It is kept behind `--detector haar` for comparison
+only. Adding background (no-face) frames from your clips via
+`convert_voc_to_yolo.py --negatives_dir` and retraining is the planned fix
+for any remaining false boxes in the YOLO detector.
 
 **3. `mask` vs `incorrect` confusion.** The trained classifier's
 per-class accuracy is mask=89.7%, no_mask=98.9%, incorrect=92.2%. The

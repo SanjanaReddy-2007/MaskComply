@@ -38,16 +38,13 @@ from pathlib import Path
 import cv2
 from scipy.stats import pearsonr, spearmanr
 
-from detect import load_face_detector, load_classifier, classify_face
+from detection import add_detector_args, detector_from_args, classify_tracks
 from tracker import CentroidTracker
 from scorer import ComplianceAggregator
-from nms import deduplicate_boxes
 
 
-def score_clip(video_path, weights_path, alpha=0.25):
+def score_clip(video_path, detector, alpha=0.25):
     """Runs the full pipeline on one clip, returns its mean session score."""
-    face_detector = load_face_detector()
-    classifier, class_names = load_classifier(weights_path)
     tracker = CentroidTracker(max_missed=10, max_distance=100, min_hits=3)
     aggregator = ComplianceAggregator(alpha=alpha, session_window=10_000)  # no window cap for a full-clip average
 
@@ -60,25 +57,9 @@ def score_clip(video_path, weights_path, alpha=0.25):
         if not ok:
             break
 
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        raw_boxes = deduplicate_boxes([tuple(b) for b in face_detector.detectMultiScale(
-            gray, scaleFactor=1.05, minNeighbors=4, minSize=(50, 50))])
-        active_boxes = tracker.update(raw_boxes)
-
-        per_person_results, missed_ids = {}, set()
-        for track_id, box in active_boxes.items():
-            if not tracker.is_confirmed(track_id):
-                continue
-            x, y, bw, bh = box
-            if tracker.is_missed_this_frame(track_id):
-                missed_ids.add(track_id)
-                continue
-            crop = frame[y:y + bh, x:x + bw]
-            if crop.size == 0:
-                missed_ids.add(track_id)
-                continue
-            label, conf = classify_face(classifier, class_names, crop)
-            per_person_results[track_id] = (label, conf)
+        detections = detector(frame)
+        active_boxes = tracker.update([d.box for d in detections])
+        per_person_results, missed_ids = classify_tracks(tracker, active_boxes, detections)
 
         aggregator.update_frame(per_person_results, missed_ids)
 
@@ -89,9 +70,19 @@ def score_clip(video_path, weights_path, alpha=0.25):
     return sum(aggregator.frame_history) / len(aggregator.frame_history)
 
 
-def main(config_path, weights_path):
+def main(config_path, args):
     config = json.loads(Path(config_path).read_text())
     clips = config["clips"]
+
+    unrated = [c["path"] for c in clips if c.get("human_rating") is None]
+    if unrated:
+        print("These clips still have human_rating = null in the config:")
+        for path in unrated:
+            print(f"  {path}")
+        print("Watch each clip, enter your own 0.0-1.0 compliance rating, then run again.")
+        return
+
+    detector = detector_from_args(args)  # built after the checks so config mistakes show first
 
     automated_scores, human_ratings, labels = [], [], []
     print(f"Scoring {len(clips)} clip(s)...\n")
@@ -101,7 +92,7 @@ def main(config_path, weights_path):
         human = clip["human_rating"]
         print(f"  {path} ... ", end="", flush=True)
 
-        auto = score_clip(path, weights_path)
+        auto = score_clip(path, detector)
         if auto is None:
             print("SKIPPED (no faces detected)")
             continue
@@ -144,6 +135,6 @@ def main(config_path, weights_path):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="validation_config.json")
-    parser.add_argument("--weights", default="models/mask_classifier.pt")
+    add_detector_args(parser)
     args = parser.parse_args()
-    main(args.config, args.weights)
+    main(args.config, args)

@@ -12,18 +12,33 @@ from pathlib import Path
 
 import cv2
 
-from detect import load_face_detector, load_classifier, classify_face, CLASS_COLORS
+from detect import CLASS_COLORS
+from detection import add_detector_args, detector_from_args, classify_tracks
 from tracker import CentroidTracker
 from scorer import ComplianceAggregator, threshold_band
-from nms import deduplicate_boxes
 
 BAND_COLOR = {"GREEN": (0, 200, 0), "YELLOW": (0, 200, 220), "RED": (0, 0, 220)}
 
 
-def process_video(video_path, weights_path, output_path, csv_path,
-                   alpha=0.25, max_missed=10):
-    face_detector = load_face_detector()
-    classifier, class_names = load_classifier(weights_path)
+def make_writer(output_path, fps, size):
+    """MJPG in an .avi (or mp4v in an .mp4) uses OpenCV's own encoders, so it
+    does not depend on extra codecs being installed. The earlier XVID choice
+    produced files some players could not decode."""
+    ext = Path(output_path).suffix.lower()
+    fourcc = "mp4v" if ext == ".mp4" else "MJPG"
+    writer = cv2.VideoWriter(str(output_path), cv2.VideoWriter_fourcc(*fourcc), fps, size)
+    if not writer.isOpened():
+        raise RuntimeError(
+            f"Could not open a video writer for {output_path} ({fourcc}). "
+            f"Try --output outputs/scored_video.avi, or use --save_frames to get JPG snapshots instead."
+        )
+    return writer
+
+
+def process_video(video_path, detector, output_path, csv_path,
+                   alpha=0.25, max_missed=10, save_frames_every=0):
+    """detector: any callable from detection.py (YoloDetector or the legacy
+    HaarClassifierDetector) that maps a frame to a list of Detection tuples."""
     tracker = CentroidTracker(max_missed=max_missed, max_distance=100)
     aggregator = ComplianceAggregator(alpha=alpha, session_window=90)
 
@@ -34,7 +49,14 @@ def process_video(video_path, weights_path, output_path, csv_path,
     fps = cap.get(cv2.CAP_PROP_FPS) or 25
     w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    writer = cv2.VideoWriter(str(output_path), cv2.VideoWriter_fourcc(*"XVID"), fps, (w, h))
+    writer = make_writer(output_path, fps, (w, h))
+
+    frames_dir = None
+    if save_frames_every > 0:
+        # JPG snapshots of the annotated frames: viewable in any image viewer,
+        # even if a video player can't open the video.
+        frames_dir = Path(output_path).with_name(Path(output_path).stem + "_frames")
+        frames_dir.mkdir(parents=True, exist_ok=True)
 
     Path(csv_path).parent.mkdir(parents=True, exist_ok=True)
     csv_file = open(csv_path, "w", newline="")
@@ -49,33 +71,18 @@ def process_video(video_path, weights_path, output_path, csv_path,
         if not ok:
             break
 
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        raw_boxes = face_detector.detectMultiScale(
-            gray, scaleFactor=1.05, minNeighbors=4, minSize=(50, 50)
-        )
-        raw_boxes = deduplicate_boxes([tuple(b) for b in raw_boxes], iou_thresh=0.3)
+        detections = detector(frame)
+        active_boxes = tracker.update([d.box for d in detections])
 
-        active_boxes = tracker.update(raw_boxes)
-
-        per_person_results, missed_ids = {}, set()
-        for track_id, box in active_boxes.items():
-            if not tracker.is_confirmed(track_id):
-                continue  # phantom/unconfirmed track -- don't let it into the score yet
-            x, y, bw, bh = box
-            if tracker.is_missed_this_frame(track_id):
-                missed_ids.add(track_id)
-                continue
-            face_crop = frame[y:y + bh, x:x + bw]
-            if face_crop.size == 0:
-                missed_ids.add(track_id)
-                continue
-            label, confidence = classify_face(classifier, class_names, face_crop)
-            per_person_results[track_id] = (label, confidence)
+        # Unconfirmed (possibly phantom) tracks are skipped inside classify_tracks.
+        per_person_results, missed_ids = classify_tracks(tracker, active_boxes, detections)
 
         frame_result = aggregator.update_frame(per_person_results, missed_ids)
 
         # --- draw overlays ---
         for track_id, box in active_boxes.items():
+            if not tracker.is_confirmed(track_id):
+                continue  # don't draw unconfirmed boxes -- they're often false positives
             x, y, bw, bh = box
             if track_id in per_person_results:
                 label, confidence = per_person_results[track_id]
@@ -98,6 +105,8 @@ def process_video(video_path, weights_path, output_path, csv_path,
             frame_scores.append(fscore)
 
         writer.write(frame)
+        if frames_dir is not None and frame_idx % save_frames_every == 0:
+            cv2.imwrite(str(frames_dir / f"frame_{frame_idx:05d}.jpg"), frame)
         csv_writer.writerow([
             frame_idx, round(frame_idx / fps, 2),
             round(fscore, 4) if fscore is not None else "",
@@ -115,13 +124,19 @@ def process_video(video_path, weights_path, output_path, csv_path,
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--video", required=True)
-    parser.add_argument("--weights", default="models/mask_classifier.pt")
     parser.add_argument("--output", default="outputs/scored_video.avi")
     parser.add_argument("--csv", default="outputs/compliance_log.csv")
     parser.add_argument("--alpha", type=float, default=0.25)
+    parser.add_argument("--save_frames", type=int, default=0, metavar="N",
+                        help="also save every Nth annotated frame as a JPG next to the video "
+                             "(e.g. 30 = about one image per second)")
+    add_detector_args(parser)
     args = parser.parse_args()
 
-    scores = process_video(args.video, args.weights, args.output, args.csv, args.alpha)
+    Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+    detector = detector_from_args(args)
+    scores = process_video(args.video, detector, args.output, args.csv, args.alpha,
+                           save_frames_every=args.save_frames)
     print(f"Processed {len(scores)} scored frames.")
     print(f"Annotated video: {args.output}")
     print(f"CSV log: {args.csv}")

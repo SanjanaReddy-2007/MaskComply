@@ -4,19 +4,13 @@ Day 1 — Base Detector
 Detects faces in an image/video frame and classifies mask compliance,
 drawing bounding boxes + class label + confidence for each face.
 
-Two-stage pipeline (chosen because bounding-box-annotated mask datasets
-like Kaggle's "Face Mask Detection" require a Kaggle API key that isn't
-reachable from this environment):
-
-  Stage 1 (localization): OpenCV Haar Cascade face detector — pretrained,
-      ships with opencv-python, needs no training data.
-  Stage 2 (classification): a small CNN classifier fine-tuned today on
-      real with_mask / without_mask images (see train_classifier.py).
-
-This mirrors the blueprint's "Face Detector + Classifier" block. Swap
-Stage 1 for a fine-tuned YOLOv8n 3-class detector once you have the full
-Kaggle dataset locally (see train_yolo.py) — the scoring layer in Day 2
-consumes the same (box, class, confidence) triples either way.
+The default detector is now the fine-tuned YOLOv8 model (models/best.pt, see
+train_yolo.py), a single stage that finds each face and classifies it. The
+original two-stage path (Haar cascade + the CNN classifier defined below) is
+still available with --detector haar, and MaskClassifier / classify_face are
+still used by train_classifier.py and verify_classifier.py. The detector
+implementations live in detection.py. The scoring layer consumes the same
+(box, class, confidence) triples either way.
 """
 
 import argparse
@@ -99,22 +93,17 @@ def classify_face(model, class_names, face_bgr):
     return class_names[pred_idx.item()], float(conf.item())
 
 
-def run_on_image(image_path, weights_path, output_path):
-    detector = load_face_detector()
-    classifier, class_names = load_classifier(weights_path)
-
+def run_on_image(image_path, detector, output_path):
+    """detector: a callable from detection.py (YoloDetector or HaarClassifierDetector)."""
     img = cv2.imread(str(image_path))
     if img is None:
         raise FileNotFoundError(image_path)
 
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    faces = detector.detectMultiScale(gray, scaleFactor=1.05, minNeighbors=4, minSize=(50, 50))
-
     results = []
-    for (x, y, w, h) in faces:
-        face_crop = img[y:y + h, x:x + w]
-        label, confidence = classify_face(classifier, class_names, face_crop)
-        results.append({"box": (x, y, w, h), "class": label, "confidence": confidence})
+    for det in detector(img):
+        x, y, w, h = det.box
+        label, confidence = det.label, det.confidence
+        results.append({"box": det.box, "class": label, "confidence": confidence})
 
         color = CLASS_COLORS.get(label, (255, 255, 255))
         cv2.rectangle(img, (x, y), (x + w, y + h), color, 2)
@@ -128,14 +117,16 @@ def run_on_image(image_path, weights_path, output_path):
 
 
 if __name__ == "__main__":
+    from detection import add_detector_args, detector_from_args
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--image", required=True)
-    parser.add_argument("--weights", default="models/mask_classifier.pt")
     parser.add_argument("--output", default="outputs/annotated.jpg")
+    add_detector_args(parser)
     args = parser.parse_args()
 
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
-    results = run_on_image(args.image, args.weights, args.output)
+    results = run_on_image(args.image, detector_from_args(args), args.output)
 
     print(f"\nDetected {len(results)} face(s):")
     for r in results:

@@ -12,7 +12,7 @@ already exists (compliance_log.csv from pipeline_video.py) and an alert
 log should only record events, not every frame.
 
 Usage:
-    streamlit run src/dashboard.py -- --video path/to/video.mp4 --weights models/mask_classifier.pt
+    streamlit run src/dashboard.py -- --video path/to/video.mp4 --yolo_weights models/best.pt
 
 (the -- before script args is required by Streamlit's CLI to separate its
 own flags from your script's flags)
@@ -29,10 +29,10 @@ import cv2
 import pandas as pd
 import streamlit as st
 
-from detect import load_face_detector, load_classifier, classify_face, CLASS_COLORS
+from detect import CLASS_COLORS
+from detection import add_detector_args, detector_from_args, classify_tracks
 from tracker import CentroidTracker
 from scorer import ComplianceAggregator
-from nms import deduplicate_boxes
 
 BAND_EMOJI = {"GREEN": "🟢", "YELLOW": "🟡", "RED": "🔴"}
 
@@ -45,9 +45,9 @@ def parse_args():
         argv = []
     parser = argparse.ArgumentParser()
     parser.add_argument("--video", required=True)
-    parser.add_argument("--weights", default="models/mask_classifier.pt")
     parser.add_argument("--alpha", type=float, default=0.25)
     parser.add_argument("--alert_log", default="outputs/alert_log.csv")
+    add_detector_args(parser)
     return parser.parse_args(argv)
 
 
@@ -79,8 +79,7 @@ def main():
         chart_placeholder = st.empty()
         alert_placeholder = st.empty()
 
-    face_detector = load_face_detector()
-    classifier, class_names = load_classifier(args.weights)
+    detector = detector_from_args(args)
     tracker = CentroidTracker(max_missed=10, max_distance=100, min_hits=3)
     aggregator = ComplianceAggregator(alpha=args.alpha, session_window=90)
 
@@ -102,25 +101,9 @@ def main():
         if not ok:
             break
 
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        raw_boxes = deduplicate_boxes([tuple(b) for b in face_detector.detectMultiScale(
-            gray, scaleFactor=1.05, minNeighbors=4, minSize=(50, 50))])
-        active_boxes = tracker.update(raw_boxes)
-
-        per_person_results, missed_ids = {}, set()
-        for track_id, box in active_boxes.items():
-            if not tracker.is_confirmed(track_id):
-                continue
-            x, y, bw, bh = box
-            if tracker.is_missed_this_frame(track_id):
-                missed_ids.add(track_id)
-                continue
-            crop = frame[y:y + bh, x:x + bw]
-            if crop.size == 0:
-                missed_ids.add(track_id)
-                continue
-            label, conf = classify_face(classifier, class_names, crop)
-            per_person_results[track_id] = (label, conf)
+        detections = detector(frame)
+        active_boxes = tracker.update([d.box for d in detections])
+        per_person_results, missed_ids = classify_tracks(tracker, active_boxes, detections)
 
         result = aggregator.update_frame(per_person_results, missed_ids)
 
