@@ -103,6 +103,11 @@ def process_video(video_path, detector, output_path, csv_path,
             cv2.putText(frame, f"Compliance: {fscore:.2f} [{band}]", (10, 30),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, band_color, 2)
             frame_scores.append(fscore)
+        else:
+            # Nobody is being tracked: no score exists, so don't show one. (A grey
+            # label makes this obvious instead of leaving the corner blank.)
+            cv2.putText(frame, "No people detected", (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (150, 150, 150), 2)
 
         writer.write(frame)
         if frames_dir is not None and frame_idx % save_frames_every == 0:
@@ -127,6 +132,10 @@ if __name__ == "__main__":
     parser.add_argument("--output", default="outputs/scored_video.avi")
     parser.add_argument("--csv", default="outputs/compliance_log.csv")
     parser.add_argument("--alpha", type=float, default=0.25)
+    parser.add_argument("--max_missed", type=int, default=10,
+                        help="frames a person's last score is held after they stop being detected "
+                             "(smooths brief misdetections; lower = score clears sooner after "
+                             "someone leaves the frame)")
     parser.add_argument("--save_frames", type=int, default=0, metavar="N",
                         help="also save every Nth annotated frame as a JPG next to the video "
                              "(e.g. 30 = about one image per second)")
@@ -136,7 +145,7 @@ if __name__ == "__main__":
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
     detector = detector_from_args(args)
     scores = process_video(args.video, detector, args.output, args.csv, args.alpha,
-                           save_frames_every=args.save_frames)
+                           max_missed=args.max_missed, save_frames_every=args.save_frames)
     print(f"Processed {len(scores)} scored frames.")
     print(f"Annotated video: {args.output}")
     print(f"CSV log: {args.csv}")

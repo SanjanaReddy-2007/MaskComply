@@ -38,11 +38,13 @@ BAND_EMOJI = {"GREEN": "🟢", "YELLOW": "🟡", "RED": "🔴"}
 
 
 def parse_args():
-    # Streamlit swallows argv itself, so script-specific args come after '--'
+    # Streamlit hands the script everything after the script name, but strips the
+    # "--" separator you type on the command line. Older versions kept it, so
+    # accept both.
     if "--" in sys.argv:
         argv = sys.argv[sys.argv.index("--") + 1:]
     else:
-        argv = []
+        argv = sys.argv[1:]
     parser = argparse.ArgumentParser()
     parser.add_argument("--video", required=True)
     parser.add_argument("--alpha", type=float, default=0.25)
@@ -140,6 +142,9 @@ def main():
             score_placeholder.metric("Compliance Score", f"{frame_score:.2f}")
             band_placeholder.markdown(f"### {BAND_EMOJI.get(band, '')} {band}")
             chart_placeholder.line_chart(pd.DataFrame({"score": score_history[-90:]}))
+        else:
+            score_placeholder.metric("Compliance Score", "-")
+            band_placeholder.markdown("### No people detected")
         if recent_alerts:
             alert_placeholder.markdown("**Recent alerts:**\n" + "\n".join(
                 f"- {a}" for a in recent_alerts[:5]
