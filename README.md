@@ -16,21 +16,19 @@ MaskComply/
 ├── README.md
 ├── requirements.txt
 ├── .gitignore
-├── validation_config.json      ← you create this (see Day 4 below)
+├── validation_config.json      ← made by build_validation_config.py; fill in the human ratings (Day 4)
 │
 ├── data/
-│   ├── shiekhburhan_raw/
-│   │   └── FMD_DATASET/
-│   │       ├── incorrect_mask/
-│   │       ├── with_mask/
-│   │       └── without_mask/
-│   └── test_clips/              ← your real Day 4 test footage goes here
+│   ├── kaggle_raw/              ← andrewmvd/face-mask-detection (images/ + annotations/); not in git
+│   ├── yolo_dataset/            ← made by convert_voc_to_yolo.py (train/val + data.yaml); not in git
+│   ├── shiekhburhan_raw/        ← classification-only data for the legacy classifier; not in git
+│   │   └── FMD_DATASET/{incorrect_mask,with_mask,without_mask}/
+│   └── test_clips/              ← test footage for the pipeline and Day 4 validation
 │
 ├── models/
 │   ├── best.pt                  ← fine-tuned YOLOv8 detector (default; train it, see below)
 │   ├── mask_classifier.pt       ← legacy CNN classifier weights (--detector haar only)
-│   ├── classes.json             ← auto-generated class-name mapping
-│   └── yolov8n.pt                ← pretrained base (not fine-tuned, see limitations)
+│   └── classes.json             ← class-name mapping for the legacy classifier
 │
 ├── src/
 │   ├── detection.py              ← shared detector: YOLOv8 (default) or legacy Haar+CNN
@@ -48,7 +46,8 @@ MaskComply/
 │   ├── train_yolo.py              ← YOLOv8n 3-class fine-tuning
 │   └── convert_voc_to_yolo.py     ← Kaggle VOC XML → YOLO format + train/val split + data.yaml
 │
-├── outputs/                      ← generated results (annotated media, CSV logs)
+├── outputs/                      ← generated results: scored_video.avi, scored_video_frames/,
+│                                   compliance_log.csv, alert_log.csv, validation_result.json
 └── docs/
     ├── DAY1_README.md
     └── DAY2_README.md
@@ -76,6 +75,14 @@ Frame_Compliance_Score = mean(EMA_score(p, t) for all tracked p in frame)
 Bands:  Green ≥ 0.8   |   Yellow 0.5–0.8   |   Red < 0.5
 ```
 
+**When nobody is in the frame there is no score.** The frame score is only
+computed over people currently tracked, so an empty scene shows "No people
+detected" (and a blank score in the CSV) instead of red. A person who leaves
+keeps their last score for `--max_missed` frames (default 10) before it
+clears; that hold is what smooths over brief misdetections. A red score on a
+scene with no real people means the detector produced a false box (see
+limitation 2).
+
 ---
 
 ## Setup
@@ -84,13 +91,25 @@ Bands:  Green ≥ 0.8   |   Yellow 0.5–0.8   |   Red < 0.5
 pip install -r requirements.txt
 ```
 
-Get a Kaggle API key (kaggle.com → Settings → Create New Token → save as
-`~/.kaggle/kaggle.json`), then:
+This installs everything the YOLO pipeline needs (including `ultralytics`).
+Training the detector needs a GPU, so it is easiest on Google Colab; running
+the pipeline on a CPU works but is slow (add `--imgsz 640` for a quicker look).
 
-```bash
-kaggle datasets download shiekhburhan/face-mask-dataset
-unzip face-mask-dataset.zip -d data/shiekhburhan_raw
-```
+You need a Kaggle API key (kaggle.com → Settings → API → create a legacy
+token, saved as `~/.kaggle/kaggle.json`; on Windows `C:\Users\<you>\.kaggle\`)
+to download the datasets:
+
+- **`andrewmvd/face-mask-detection`** (bounding boxes) — trains the YOLO
+  detector. Used in Quick start step 1. This is the one you need.
+- `shiekhburhan/face-mask-dataset` (cropped faces, no boxes) — only for the
+  legacy classifier (`--detector haar`):
+  ```bash
+  kaggle datasets download shiekhburhan/face-mask-dataset
+  unzip face-mask-dataset.zip -d data/shiekhburhan_raw
+  ```
+
+`unzip` does not exist in Windows PowerShell; use
+`Expand-Archive -Path file.zip -DestinationPath folder` there.
 
 ---
 
@@ -103,7 +122,11 @@ unzip face-mask-detection.zip -d data/kaggle_raw        # Windows: Expand-Archiv
 python src/convert_voc_to_yolo.py --raw_dir data/kaggle_raw --out_dir data/yolo_dataset
 #    (optional) --negatives_dir data/negatives   <- frames with no faces: windows, lights, signs
 
-# 2. Train the detector (use a GPU, e.g. Colab), then put the result at models/best.pt
+# 2. Train the detector (use a GPU, e.g. Colab). The path of the finished
+#    best.pt is printed at the end of training (recent Ultralytics versions use
+#    runs/detect/...; the Colab `yolo detect train` command uses
+#    runs/detect/train/weights/best.pt). Copy it to models/best.pt, which is
+#    where the other scripts look by default.
 python src/train_yolo.py --data data/yolo_dataset/data.yaml --epochs 50 --imgsz 960
 
 # 3. Run on a single image
@@ -112,13 +135,14 @@ python src/detect.py --image path/to/photo.jpg --yolo_weights models/best.pt
 # 4. Run the full detect+track+score pipeline on a video
 python src/pipeline_video.py --video path/to/video.mp4 --yolo_weights models/best.pt
 
-# 5. Live dashboard (note the -- before your own args)
+# 5. Live dashboard (keep the -- before your own args; Streamlit needs it)
 streamlit run src/dashboard.py -- --video path/to/video.mp4 --yolo_weights models/best.pt
 
 # Useful options on every script above:
 #   --conf 0.4      minimum detection confidence (raise it to cut false boxes)
 #   --imgsz 960     YOLO inference size
 #   --save_frames 30  (pipeline_video.py) also save every 30th annotated frame as a JPG
+#   --max_missed 10   (pipeline_video.py) frames a person's score is held after they vanish
 #   --detector haar use the old Haar cascade + CNN classifier instead
 #                   (needs opencv-python<5 and models/mask_classifier.pt)
 
@@ -136,9 +160,9 @@ paper.
 
 1. **Get 3–5 real, independent short video clips.** Not the training
    data, not synthetic — genuine footage. Recording your own short
-   phone/webcam clips is the recommended approach (see rationale in the
-   project chat log) — cheap, no licensing issues, and matches the
-   deployment scenario directly. Put them in `data/test_clips/`.
+   phone/webcam clips is the recommended approach: it is cheap, has no
+   licensing questions, and matches the deployment scenario directly. Put
+   them in `data/test_clips/`.
 
 2. **Scaffold the config:**
    ```bash
@@ -187,9 +211,10 @@ only. Adding background (no-face) frames from your clips via
 `convert_voc_to_yolo.py --negatives_dir` and retraining is the planned fix
 for any remaining false boxes in the YOLO detector.
 
-**3. `mask` vs `incorrect` confusion.** The trained classifier's
-per-class accuracy is mask=89.7%, no_mask=98.9%, incorrect=92.2%. The
-errors that do occur are concentrated between `mask` and `incorrect`
+**3. `mask` vs `incorrect` confusion.** This was measured on the legacy CNN
+classifier (`--detector haar`): per-class accuracy mask=89.7%, no_mask=98.9%,
+incorrect=92.2%. The YOLO detector's own per-class numbers are in item 1,
+and its weakest class is also `incorrect`. The errors that do occur are concentrated between `mask` and `incorrect`
 specifically (confirmed via spot-check), which makes sense — a mask worn
 slightly wrong looks visually similar to one worn correctly, while a bare
 face looks nothing like either. Worth stating directly in the report's
@@ -205,11 +230,18 @@ consistently for 3 frames, sticky across brief dropouts). Verified via a
 synthetic stress test: the target person's EMA held rock-steady through
 a simulated 4-frame misdetection after the fix.
 
-**5. OpenCV video codec gotcha.** Videos written by earlier versions of
-these scripts used the `mp4v` fourcc, which produces `.mp4` files that
-often appear blank/unplayable in standard players (a well-known OpenCV
-issue) despite containing valid frame data. Fixed by switching to `XVID`
-fourcc with `.avi` containers throughout.
+**5. OpenCV video codec gotcha.** OpenCV's `mp4v` output often appears
+blank in standard players, and `XVID` `.avi` files also failed to decode on
+at least one Windows machine (VLC showed only an icon). `pipeline_video.py`
+now writes `MJPG` in an `.avi`, which uses OpenCV's built-in encoder and
+needs no extra codecs. If a video still will not play, run with
+`--save_frames 30` to get JPG snapshots of the annotated frames instead.
+(`build_synthetic_test.py` still uses `XVID`.)
+
+**6. Footage licensing.** The clips in `data/test_clips/` look like stock
+footage. Check each one's licence before the repository is shared or the
+clips are redistributed, and cite their sources in the report. Your own
+recordings avoid the question.
 
 ---
 
@@ -217,4 +249,13 @@ fourcc with `.avi` containers throughout.
 
 See `docs/DAY1_README.md` and `docs/DAY2_README.md` for the detailed,
 honest account of what was built each day, what didn't work on the first
-try, and how it was fixed.
+try, and how it was fixed. Those two files describe the earlier Haar + CNN
+version, with `scripts/` paths that are now `src/`; the current default is
+the YOLOv8 detector described above.
+
+**Detector upgrade (after Day 4 setup).** Replaced the Haar cascade with a
+YOLOv8n detector fine-tuned on `andrewmvd/face-mask-detection`
+(`convert_voc_to_yolo.py` → `train_yolo.py`), behind a shared interface in
+`detection.py`. Also added: `--conf`/`--imgsz`/`--max_missed`/`--save_frames`
+options, a "No people detected" state, an `MJPG` video writer, and a
+dashboard fix for current Streamlit versions.

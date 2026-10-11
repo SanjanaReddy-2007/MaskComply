@@ -54,7 +54,11 @@ def main(data_yaml, epochs, imgsz, batch):
     )
     metrics = model.val()
     print("Validation mAP50-95:", metrics.box.map)
-    print("Best weights saved under models/mask_yolov8n/weights/best.pt")
+    # Where Ultralytics puts the run depends on its version (recent versions nest
+    # it under runs/detect/), so print the real path instead of guessing.
+    best = getattr(getattr(model, "trainer", None), "best", None)
+    print(f"Best weights: {best}" if best else "Best weights: see the 'weights' folder of this run")
+    print("Copy that file to models/best.pt -- that is where the other scripts look by default.")
 
 
 if __name__ == "__main__":
