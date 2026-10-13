@@ -9,6 +9,12 @@ Implements the blueprint's exact formulas:
     Frame_Compliance_Score = mean(EMA_score(p, t) for all tracked p in frame)
 
 Threshold bands: Green >= 0.8, Yellow 0.5-0.8, Red < 0.5.
+
+Empty scenes: when nobody is being tracked, nobody is breaking the rule, so
+the frame score is `empty_frame_score` (default 1.0 = GREEN). Those frames are
+NOT added to the rolling/session history, so the session score (and the
+validation correlation built on it) only averages frames that contain people.
+Pass empty_frame_score=None to get no score at all for empty frames.
 """
 
 CLASS_WEIGHTS = {
@@ -56,8 +62,9 @@ class PersonScorer:
 class ComplianceAggregator:
     """Owns one PersonScorer per tracked ID and computes frame/session scores."""
 
-    def __init__(self, alpha=0.25, session_window=30):
+    def __init__(self, alpha=0.25, session_window=30, empty_frame_score=1.0):
         self.alpha = alpha
+        self.empty_frame_score = empty_frame_score
         self.person_scorers = {}   # track_id -> PersonScorer
         self.session_window = session_window
         self.frame_history = []    # rolling list of frame-level scores
@@ -82,18 +89,18 @@ class ComplianceAggregator:
                     None, 0.0, missed_this_frame=True
                 )
 
-        frame_score = (
-            sum(current_scores.values()) / len(current_scores)
-            if current_scores else None
-        )
-
-        if frame_score is not None:
-            self.frame_history.append(frame_score)
+        no_people = not current_scores
+        if no_people:
+            frame_score = self.empty_frame_score   # nobody to be non-compliant
+        else:
+            frame_score = sum(current_scores.values()) / len(current_scores)
+            self.frame_history.append(frame_score)  # only frames with people count
             if len(self.frame_history) > self.session_window:
                 self.frame_history.pop(0)
 
         return {
             "per_person_ema": current_scores,
+            "no_people": no_people,
             "frame_score": frame_score,
             "frame_band": threshold_band(frame_score) if frame_score is not None else None,
             "session_score": (

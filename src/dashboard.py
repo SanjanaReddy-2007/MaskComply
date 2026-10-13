@@ -49,6 +49,8 @@ def parse_args():
     parser.add_argument("--video", required=True)
     parser.add_argument("--alpha", type=float, default=0.25)
     parser.add_argument("--alert_log", default="outputs/alert_log.csv")
+    parser.add_argument("--empty_score", type=float, default=1.0,
+                        help="score shown when nobody is detected (default 1.0 = green; -1 = none)")
     add_detector_args(parser)
     return parser.parse_args(argv)
 
@@ -83,7 +85,9 @@ def main():
 
     detector = detector_from_args(args)
     tracker = CentroidTracker(max_missed=10, max_distance=100, min_hits=3)
-    aggregator = ComplianceAggregator(alpha=args.alpha, session_window=90)
+    aggregator = ComplianceAggregator(
+        alpha=args.alpha, session_window=90,
+        empty_frame_score=None if args.empty_score < 0 else args.empty_score)
 
     init_alert_log(args.alert_log)
     last_band = None
@@ -140,7 +144,8 @@ def main():
         video_placeholder.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), channels="RGB")
         if frame_score is not None:
             score_placeholder.metric("Compliance Score", f"{frame_score:.2f}")
-            band_placeholder.markdown(f"### {BAND_EMOJI.get(band, '')} {band}")
+            note = " - no people detected" if result["no_people"] else ""
+            band_placeholder.markdown(f"### {BAND_EMOJI.get(band, '')} {band}{note}")
             chart_placeholder.line_chart(pd.DataFrame({"score": score_history[-90:]}))
         else:
             score_placeholder.metric("Compliance Score", "-")

@@ -36,11 +36,13 @@ def make_writer(output_path, fps, size):
 
 
 def process_video(video_path, detector, output_path, csv_path,
-                   alpha=0.25, max_missed=10, save_frames_every=0):
+                   alpha=0.25, max_missed=10, save_frames_every=0,
+                   empty_frame_score=1.0):
     """detector: any callable from detection.py (YoloDetector or the legacy
     HaarClassifierDetector) that maps a frame to a list of Detection tuples."""
     tracker = CentroidTracker(max_missed=max_missed, max_distance=100)
-    aggregator = ComplianceAggregator(alpha=alpha, session_window=90)
+    aggregator = ComplianceAggregator(alpha=alpha, session_window=90,
+                                      empty_frame_score=empty_frame_score)
 
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
@@ -61,7 +63,7 @@ def process_video(video_path, detector, output_path, csv_path,
     Path(csv_path).parent.mkdir(parents=True, exist_ok=True)
     csv_file = open(csv_path, "w", newline="")
     csv_writer = csv.writer(csv_file)
-    csv_writer.writerow(["frame", "timestamp_s", "frame_score", "band", "session_score"])
+    csv_writer.writerow(["frame", "timestamp_s", "frame_score", "band", "session_score", "people"])
 
     frame_scores = []
     frame_idx = 0
@@ -100,12 +102,12 @@ def process_video(video_path, detector, output_path, csv_path,
         band = frame_result["frame_band"]
         if fscore is not None:
             band_color = BAND_COLOR[band]
-            cv2.putText(frame, f"Compliance: {fscore:.2f} [{band}]", (10, 30),
+            suffix = "  (no people detected)" if frame_result["no_people"] else ""
+            cv2.putText(frame, f"Compliance: {fscore:.2f} [{band}]{suffix}", (10, 30),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, band_color, 2)
             frame_scores.append(fscore)
         else:
-            # Nobody is being tracked: no score exists, so don't show one. (A grey
-            # label makes this obvious instead of leaving the corner blank.)
+            # --empty_score was disabled and nobody is tracked: show no score.
             cv2.putText(frame, "No people detected", (10, 30),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (150, 150, 150), 2)
 
@@ -117,6 +119,7 @@ def process_video(video_path, detector, output_path, csv_path,
             round(fscore, 4) if fscore is not None else "",
             band or "",
             round(frame_result["session_score"], 4) if frame_result["session_score"] else "",
+            len(frame_result["per_person_ema"]),
         ])
         frame_idx += 1
 
@@ -132,6 +135,9 @@ if __name__ == "__main__":
     parser.add_argument("--output", default="outputs/scored_video.avi")
     parser.add_argument("--csv", default="outputs/compliance_log.csv")
     parser.add_argument("--alpha", type=float, default=0.25)
+    parser.add_argument("--empty_score", type=float, default=1.0,
+                        help="compliance score shown when nobody is detected (default 1.0 = green; "
+                             "use -1 to show no score)")
     parser.add_argument("--max_missed", type=int, default=10,
                         help="frames a person's last score is held after they stop being detected "
                              "(smooths brief misdetections; lower = score clears sooner after "
@@ -145,7 +151,8 @@ if __name__ == "__main__":
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
     detector = detector_from_args(args)
     scores = process_video(args.video, detector, args.output, args.csv, args.alpha,
-                           max_missed=args.max_missed, save_frames_every=args.save_frames)
+                           max_missed=args.max_missed, save_frames_every=args.save_frames,
+                           empty_frame_score=None if args.empty_score < 0 else args.empty_score)
     print(f"Processed {len(scores)} scored frames.")
     print(f"Annotated video: {args.output}")
     print(f"CSV log: {args.csv}")
