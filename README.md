@@ -75,13 +75,18 @@ Frame_Compliance_Score = mean(EMA_score(p, t) for all tracked p in frame)
 Bands:  Green ≥ 0.8   |   Yellow 0.5–0.8   |   Red < 0.5
 ```
 
-**When nobody is in the frame there is no score.** The frame score is only
-computed over people currently tracked, so an empty scene shows "No people
-detected" (and a blank score in the CSV) instead of red. A person who leaves
-keeps their last score for `--max_missed` frames (default 10) before it
-clears; that hold is what smooths over brief misdetections. A red score on a
-scene with no real people means the detector produced a false box (see
-limitation 2).
+**When nobody is in the frame the score is green (1.0).** Nobody is breaking
+the rule, so an empty scene scores 1.0 and the overlay reads
+`Compliance: 1.00 [GREEN] (no people detected)`. Change it with
+`--empty_score` (for example `--empty_score -1` shows no score instead).
+These empty frames are *not* counted in the session score, so the session
+score (and the Day 4 validation correlation built from it) only averages frames
+that contain people; a clip where the detector never finds anyone is skipped by
+`validate.py` rather than scored as perfect. A person who leaves keeps their
+last score for `--max_missed` frames (default 10) before it clears to green;
+that hold smooths over brief misdetections. A red score on a scene with no real
+people means the detector produced a false box (see limitation 2), which this
+setting does not hide.
 
 ---
 
@@ -143,6 +148,7 @@ streamlit run src/dashboard.py -- --video path/to/video.mp4 --yolo_weights model
 #   --imgsz 960     YOLO inference size
 #   --save_frames 30  (pipeline_video.py) also save every 30th annotated frame as a JPG
 #   --max_missed 10   (pipeline_video.py) frames a person's score is held after they vanish
+#   --empty_score 1.0 score shown when nobody is detected (default green; -1 = no score)
 #   --detector haar use the old Haar cascade + CNN classifier instead
 #                   (needs opencv-python<5 and models/mask_classifier.pt)
 
